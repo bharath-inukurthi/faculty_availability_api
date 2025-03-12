@@ -1,10 +1,17 @@
+import os
+import logging
 from fastapi import FastAPI, Query
 from sqlalchemy import create_engine, text
 from typing import List, Dict
-import os
+import uvicorn
+from dotenv import load_dotenv
+
+load_dotenv()
+# Initialize Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 # FastAPI instance
 app = FastAPI()
-
 
 # Create Database URL
 DATABASE_URL = os.environ.get("supabase_uri")
@@ -38,19 +45,33 @@ AND CAST(TO_TIMESTAMP(SPLIT_PART(s."Time Slot", '-', 1), 'HH24:MI') AS TIME) >= 
 ORDER BY CAST(TO_TIMESTAMP(SPLIT_PART(s."Time Slot", '-', 1), 'HH24:MI') AS TIME) ASC 
 LIMIT 1;"""
 
-def execute_query(faculty_name: str, day: str, time: str) -> List[Dict]:
+def execute_query(faculty_name: str, day: str, time: str) -> str:
     """Executes the SQL query on Supabase and returns results."""
-    with engine.connect() as connection:
-        result = connection.execute(text(formattable_sql_query), {
-            "faculty_name": faculty_name,
-            "day": day,
-            "time": time
-        })
-        rows = result.fetchall()
-        output= [dict(row._mapping) for row in rows] 
-        results=output[0]
-        return f"You can meet {results['faculty_name']} in room.no {results['Room No']} from {results['Time Slot']} "
+    logging.info(f"Executing query for Faculty: {faculty_name}, Day: {day}, Time: {time}")
 
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text(formattable_sql_query), {
+                "faculty_name": faculty_name,
+                "day": day,
+                "time": time
+            })
+            rows = result.fetchall()
+
+            if not rows:
+                logging.warning("No schedule found for given input.")
+                return "No schedule available for this faculty at the given time."
+
+            output = [dict(row._mapping) for row in rows] 
+            results = output[0]  # First result
+            logging.info(f"Query result: {results}")
+            keys=list(results.keys())
+            response = f"You can meet {results[keys[0]]} in room no. {results[keys[1]]} from {results[keys[2]]}."
+            logging.info(f"response: {response}")
+            return response
+    except Exception as e:
+        logging.error(f"Database query error: {e}")
+        return "Error retrieving schedule. Please try again later."
 
 @app.get("/faculty-schedule/")
 def get_faculty_schedule(
@@ -61,3 +82,18 @@ def get_faculty_schedule(
     """API endpoint to get faculty schedule."""
     return {"schedule": execute_query(faculty_name, day, time)}
 
+@app.get("/faculty_list")
+def faculty_list(dept:str=Query(...,description="Enter department of faculty yu want to meet")):
+    logging.info(f"Executing query for department: {dept}")
+    with engine.connection() as connection:
+        result=connection.execute((text("""Select "Faculty" from faculty_db f join dept_db d on f."dept_id"=d."dept_id" where dept=:department"""),{
+            "department":dept
+        }))
+    rows=result.fetchall()
+    logging.info(f"Query result: {results}")
+    output = [dict(row._mapping) for row in rows] 
+    results = output[0]  # First result
+    return results
+# Run FastAPI locally
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

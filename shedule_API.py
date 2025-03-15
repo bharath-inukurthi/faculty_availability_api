@@ -2,8 +2,6 @@ import os
 import logging
 from fastapi import FastAPI, Query
 from sqlalchemy import create_engine, text
-from typing import List, Dict
-import uvicorn
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,30 +18,41 @@ DATABASE_URL = os.environ.get("supabase_uri")
 engine = create_engine(DATABASE_URL)
 
 # SQL Query Template
-formattable_sql_query = """SELECT f."Faculty" AS Faculty_Name, 
-       r."Room No" AS "Room No", 
-       s."Time Slot" AS "Time Slot", 
-       d."Day" 
-FROM faculty_db f 
-JOIN (
-    SELECT fs."Faculty_id", 
-           MIN(CASE WHEN LOWER(f2."Faculty") LIKE LOWER(:faculty_name) THEN 0 ELSE 1 END) AS like_priority, 
-           MIN(LEVENSHTEIN(LOWER(TRIM(f2."Faculty")), LOWER(:faculty_name))) AS min_distance 
-    FROM faculty_db f2 
-    JOIN faculty_subject_db fs ON f2."Faculty_id" = fs."Faculty_id" 
-    GROUP BY fs."Faculty_id" 
-    ORDER BY like_priority ASC, min_distance ASC 
-    LIMIT 1
-) AS closest_match ON f."Faculty_id" = closest_match."Faculty_id" 
-LEFT JOIN faculty_subject_db fs ON f."Faculty_id" = fs."Faculty_id" 
-LEFT JOIN time_table_db tt ON tt."fs_id" = fs."fs_id" 
-LEFT JOIN room_db r ON tt."Room ID" = r."Room ID" 
-LEFT JOIN slots_db s ON tt."Time_slot_id" = s."Time_slot_id" 
-LEFT JOIN days_db d ON tt."day_id" = d."day_id" 
-WHERE d."Day" = :day 
-AND CAST(TO_TIMESTAMP(SPLIT_PART(s."Time Slot", '-', 1), 'HH24:MI') AS TIME) >= TIME :time 
-ORDER BY CAST(TO_TIMESTAMP(SPLIT_PART(s."Time Slot", '-', 1), 'HH24:MI') AS TIME) ASC 
-LIMIT 1;"""
+formattable_sql_query = """WITH faculty_schedule AS (
+    SELECT tt.day_id, tt."Time_slot_id", fs."Faculty"  
+    FROM time_table_db tt
+    JOIN faculty_subject_db fs ON tt.fs_id = fs.fs_id
+    WHERE fs."Faculty" = :faculty_name  -- Replace dynamically if needed
+), 
+all_slots AS (
+    SELECT d.day_id, 
+           s."Time_slot_id", 
+           s."Time Slot" AS slot_time,  -- Keep full slot format (09:00-10:00)
+           SPLIT_PART(s."Time Slot", '-', 1)::TIME AS start_time,  -- Extract start time
+           SPLIT_PART(s."Time Slot", '-', 2)::TIME AS end_time,  -- Extract end time
+           d."Day"
+    FROM days_db d
+    CROSS JOIN slots_db s
+) 
+SELECT :faculty_name  AS Faculty, 
+       c.cabin,
+       a.slot_time AS Slot -- Keep full time range
+FROM all_slots a
+LEFT JOIN faculty_schedule f 
+    ON a.day_id = f.day_id AND a."Time_slot_id" = f."Time_slot_id"
+JOIN cabin_db c ON c."Faculty" = :faculty_name   -- Map faculty to their cabin
+WHERE f."Time_slot_id" IS NULL
+AND (
+    a.day_id > (SELECT day_id FROM days_db WHERE "Day" = :day)  
+    OR (
+        a.day_id = (SELECT day_id FROM days_db WHERE "Day" = :day)  
+        AND (:time ::TIME < a.start_time OR :time ::TIME < a.end_time)  -- Compare both start & end
+    )
+) 
+ORDER BY a.day_id, a.start_time
+LIMIT 1;
+
+"""
 
 def execute_query(faculty_name: str, day: str, time: str) -> str:
     """Executes the SQL query on Supabase and returns results."""
@@ -83,17 +92,13 @@ def get_faculty_schedule(
     return {"schedule": execute_query(faculty_name, day, time)}
 
 @app.get("/faculty_list")
-def faculty_list(dept:str=Query(...,description="Enter department of faculty yu want to meet")):
-    logging.info(f"Executing query for department: {dept}")
-    with engine.connection() as connection:
-        result=connection.execute((text("""Select "Faculty" from faculty_db f join dept_db d on f."dept_id"=d."dept_id" where dept=:department"""),{
-            "department":dept
-        }))
+def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
+    #logging.info(f"Executing query for department: {dept}")
+    with engine.connect() as connection:
+        result=connection.execute(text("""Select "Faculty" from faculty_db;"""))
     rows=result.fetchall()
-    logging.info(f"Query result: {results}")
-    output = [dict(row._mapping) for row in rows] 
-    results = output[0]  # First result
-    return results
-# Run FastAPI locally
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logging.info(f"Query result: {rows}\n\n")
+    output = [row[0] for row in rows[1:]]
+     # First result
+    logging.info(output)
+    return output

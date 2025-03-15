@@ -95,7 +95,10 @@ def get_faculty_schedule(
 def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
     #logging.info(f"Executing query for department: {dept}")
     with engine.connect() as connection:
-        result=connection.execute(text("""Select "Faculty" from faculty_db;"""))
+        result=connection.execute(text("""SELECT "Faculty"
+FROM faculty_db
+ORDER BY REGEXP_REPLACE("Faculty", '^(Dr\.|Prof\.|Mr\.|Ms\.)\s*[A-Z]\.\s*', '', 'gi');
+"""))
     rows=result.fetchall()
     logging.info(f"Query result: {rows}\n\n")
     output = [row[0] for row in rows[1:]]

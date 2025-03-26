@@ -20,7 +20,25 @@ DATABASE_URL = os.environ.get("supabase_uri")
 engine = create_engine(DATABASE_URL)
 
 # SQL Query Template
-formattable_sql_query = """WITH faculty_schedule AS (
+free_room_query=query = """
+        WITH occupied_rooms AS (
+            SELECT tt."Room ID"
+            FROM "time_table_db" tt
+            JOIN "days_db" d ON tt."day_id" = d."day_id"
+            JOIN "slots_db" s ON tt."Time_slot_id" = s."Time_slot_id"
+            WHERE d."Day" = :day  
+            AND (
+                :time >= SPLIT_PART(s."Time Slot", '-', 1)  
+                AND :time < SPLIT_PART(s."Time Slot", '-', 2)
+            )
+        )
+        SELECT r."Room ID", r."Room No"
+        FROM "room_db" r
+        LEFT JOIN occupied_rooms o ON r."Room ID" = o."Room ID"
+        WHERE o."Room ID" IS NULL;
+    """
+
+faculty_sql_query = """WITH faculty_schedule AS (
     SELECT tt.day_id, tt."Time_slot_id", fs."Faculty"  
     FROM time_table_db tt
     JOIN faculty_subject_db fs ON tt.fs_id = fs.fs_id
@@ -166,3 +184,15 @@ def get_file(object_key:str):
     )
 
     return {"Pre-signed URL": presigned_url}
+
+
+@app.get("/free-rooms/")
+def get_free_rooms(day: str = Query(..., title="Day of the week"),
+                   time: str = Query(..., title="Time (HH:MM)")):
+
+
+    with engine.connect() as connection:
+        result = connection.execute(text(free_room_query), {"day": day, "time": time})
+        free_rooms = [{"Room ID": row[0], "Room No": row[1]} for row in result]
+
+    return {"day": day, "time": time, "free_rooms": free_rooms}

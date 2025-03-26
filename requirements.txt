@@ -4,5 +4,6 @@ SQLAlchemy==2.0.38
 supabase==2.13.0
 psycopg2==2.9.10
 python-dotenv==1.0.1
-boto3==1.37.20
+boto3==1.37.1
 requests
+aioitertools==0.12.0

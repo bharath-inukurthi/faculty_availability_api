@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 import boto3
 import time
 import  requests
-
+import asyncio
+from contextlib import asynccontextmanager
 
 load_dotenv()
 # Initialize Logging
@@ -41,7 +42,7 @@ free_room_query=query = """
         WHERE o."Room ID" IS NULL;
     """
 
-faculty_sql_query = """ WITH faculty_schedule AS (
+faculty_sql_query = """WITH faculty_schedule AS (
     SELECT tt.day_id, tt."Time_slot_id", fs."Faculty"  
     FROM time_table_db tt
     JOIN faculty_subject_db fs ON tt.fs_id = fs.fs_id
@@ -74,6 +75,7 @@ AND (
 ) 
 ORDER BY a.day_id, a.start_time
 LIMIT 1;
+
 """
 app = FastAPI()
 # Function to periodically ping itself
@@ -101,12 +103,12 @@ def health_check():
 
 
 async def execute_query(faculty_name: str, day: str, time: str) -> str:
-    """Executes the SQL query on Supabase and returns results."""
+    """Executes the SQL query asynchronously and returns results."""
     logging.info(f"Executing query for Faculty: {faculty_name}, Day: {day}, Time: {time}")
 
     try:
-        with engine.connect() as connection:
-            result = connection.execute(text(faculty_sql_query), {
+        async with engine.connect() as connection:
+            result = await connection.execute(text(faculty_sql_query), {
                 "faculty_name": faculty_name,
                 "day": day,
                 "time": time
@@ -120,22 +122,17 @@ async def execute_query(faculty_name: str, day: str, time: str) -> str:
             output = [dict(row._mapping) for row in rows]
             results = output[0]  # First result
             logging.info(f"Query result: {results}")
-            keys=list(results.keys())
-            response = f"You can meet {results[keys[0]]} in room no. {results[keys[1]]} from {results[keys[2]]}."
-            logging.info(f"response: {response}")
+            response = f"You can meet {results['Faculty']} in room no. {results['cabin']} from {results['Slot']}."
+            logging.info(f"Response: {response}")
             return response
     except Exception as e:
         logging.error(f"Database query error: {e}")
         return "Error retrieving schedule. Please try again later."
 
 @app.get("/faculty-schedule/")
-async def get_faculty_schedule(
-    faculty_name: str = Query(..., description="Enter faculty name"),
-    day: str = Query(..., description="Enter the day (e.g., Monday)"),
-    time: str = Query(..., description="Enter time in HH:MM format (e.g., 9:00)")
-):
-    """API endpoint to get faculty schedule."""
-    return {"schedule": execute_query(faculty_name, day, time)}
+async def get_faculty_schedule(faculty_name: str, day: str, time: str):
+    """FastAPI endpoint to get faculty schedule asynchronously."""
+    return {"schedule": await execute_query(faculty_name, day, time)}
 
 @app.get("/faculty_list")
 async def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):

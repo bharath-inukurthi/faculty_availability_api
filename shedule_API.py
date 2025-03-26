@@ -7,8 +7,7 @@ from dotenv import load_dotenv
 import boto3
 import time
 import  requests
-import asyncio
-from contextlib import asynccontextmanager
+
 
 load_dotenv()
 # Initialize Logging
@@ -107,7 +106,7 @@ def execute_query(faculty_name: str, day: str, time: str) -> str:
     logging.info(f"Executing query for Faculty: {faculty_name}, Day: {day}, Time: {time}")
 
     try:
-        async with engine.connect() as connection:
+         with engine.connect() as connection:
             result = connection.execute(text(faculty_sql_query), {
                 "faculty_name": faculty_name,
                 "day": day,
@@ -130,12 +129,12 @@ def execute_query(faculty_name: str, day: str, time: str) -> str:
         return "Error retrieving schedule. Please try again later."
 
 @app.get("/faculty-schedule/")
-async def get_faculty_schedule(faculty_name: str, day: str, time: str):
+def get_faculty_schedule(faculty_name: str, day: str, time: str):
     """FastAPI endpoint to get faculty schedule asynchronously."""
     return {"schedule":execute_query(faculty_name, day, time)}
 
 @app.get("/faculty_list")
-async def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
+def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
     #logging.info(f"Executing query for department: {dept}")
     with engine.connect() as connection:
         result=connection.execute(text("""SELECT "Faculty"
@@ -151,7 +150,7 @@ ORDER BY REGEXP_REPLACE("Faculty", '^(Dr\.|Prof\.|Mr\.|Ms\.)\s*[A-Z]\.\s*', '', 
 
 
 @app.get("/list-objects/")
-async def list_objects(folder :str="Forms"):
+def list_objects(folder :str="Forms"):
     try:
         s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                  aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -186,7 +185,7 @@ async def list_objects(folder :str="Forms"):
         return {"error": str(e)}
 
 @app.get("/get-file/")
-async def get_file(object_key:str):
+def get_file(object_key:str):
     try:
         s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                  aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -210,7 +209,7 @@ async def get_file(object_key:str):
 
 
 @app.get("/free-rooms/")
-async def get_free_rooms(day: str = Query(..., title="Day of the week"),
+def get_free_rooms(day: str = Query(..., title="Day of the week"),
                    time: str = Query(..., title="Time (HH:MM)")):
 
 

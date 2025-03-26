@@ -193,6 +193,9 @@ def get_free_rooms(day: str = Query(..., title="Day of the week"),
 
     with engine.connect() as connection:
         result = connection.execute(text(free_room_query), {"day": day, "time": time})
-        free_rooms = [{"Room ID": row[0], "Room No": row[1]} for row in result]
+        free_rooms = [
+            {"Room ID": row[0], "Room No": row[1]}
+            for row in result if "&" not in row[1]
+        ]
 
-    return {"day": day, "time": time, "free_rooms": free_rooms}
+    return {"day": day, "time": time, "free_rooms": free_rooms[1]["Room No"]}

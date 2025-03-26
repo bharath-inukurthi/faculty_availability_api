@@ -102,7 +102,7 @@ def health_check():
     return {"status": "keeping live"}
 
 
-async def execute_query(faculty_name: str, day: str, time: str) -> str:
+def execute_query(faculty_name: str, day: str, time: str) -> str:
     """Executes the SQL query asynchronously and returns results."""
     logging.info(f"Executing query for Faculty: {faculty_name}, Day: {day}, Time: {time}")
 
@@ -132,7 +132,7 @@ async def execute_query(faculty_name: str, day: str, time: str) -> str:
 @app.get("/faculty-schedule/")
 async def get_faculty_schedule(faculty_name: str, day: str, time: str):
     """FastAPI endpoint to get faculty schedule asynchronously."""
-    return {"schedule":await execute_query(faculty_name, day, time)}
+    return {"schedule":execute_query(faculty_name, day, time)}
 
 @app.get("/faculty_list")
 async def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):

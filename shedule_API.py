@@ -110,7 +110,7 @@ ORDER BY REGEXP_REPLACE("Faculty", '^(Dr\.|Prof\.|Mr\.|Ms\.)\s*[A-Z]\.\s*', '', 
 
 
 @app.get("/list-objects/")
-def list_objects(folder :str):
+def list_objects(folder :str="Forms"):
     try:
         s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                  aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -124,11 +124,10 @@ def list_objects(folder :str):
 
     bucket_name = os.getenv("AWS_BUCKET_NAME")  # Get bucket name from .env
     region = os.getenv("AWS_REGION", "us-east-1")  # Default region: us-east-1
-    logging.info(f"Attempting to list objects in bucket: {bucket_name}")
+    logging.info(f"Attempting to list objects in: {bucket_name}/{folder}")
 
     try:
         response = s3_client.list_objects_v2(Bucket=bucket_name,Prefix=f"{folder}")
-        logging.info(response)
         if "Contents" in response:
             files = []
             for obj in response["Contents"][1:]:
@@ -144,3 +143,26 @@ def list_objects(folder :str):
     except Exception as e:
         logging.error(f"Error listing objects: {e}")
         return {"error": str(e)}
+
+@app.get("/get-file/")
+def get_file(object_key:str):
+    try:
+        s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+                                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                                 region_name=os.getenv("AWS_REGION"))
+        logging.info("S3 client successfully created")
+    except Exception as e:
+        logging.error(f"Error creating S3 client: {e}")
+        s3_client = None
+    if s3_client is None:
+        return {"error": "S3 client could not be initialized"}
+
+    bucket_name = os.getenv("AWS_BUCKET_NAME")  # Get bucket name from .env
+    logging.info(f"Attempting download: {object_key}")
+    presigned_url = s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': bucket_name, 'Key': object_key},
+        ExpiresIn=60  # URL valid for 1 hour
+    )
+
+    return {"Pre-signed URL": presigned_url}

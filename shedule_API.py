@@ -108,7 +108,7 @@ async def execute_query(faculty_name: str, day: str, time: str) -> str:
 
     try:
         async with engine.connect() as connection:
-            result = await connection.execute(text(faculty_sql_query), {
+            result = connection.execute(text(faculty_sql_query), {
                 "faculty_name": faculty_name,
                 "day": day,
                 "time": time
@@ -132,7 +132,7 @@ async def execute_query(faculty_name: str, day: str, time: str) -> str:
 @app.get("/faculty-schedule/")
 async def get_faculty_schedule(faculty_name: str, day: str, time: str):
     """FastAPI endpoint to get faculty schedule asynchronously."""
-    return {"schedule": await execute_query(faculty_name, day, time)}
+    return {"schedule":await execute_query(faculty_name, day, time)}
 
 @app.get("/faculty_list")
 async def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):

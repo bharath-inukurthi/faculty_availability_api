@@ -1,17 +1,20 @@
 import os
 import logging
 from fastapi import FastAPI, Query
-
+import threading
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import boto3
+import time
+import  requests
+from contextlib import asynccontextmanager
 
 load_dotenv()
 # Initialize Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# FastAPI instance
-app = FastAPI()
+API_URL = "https://faculty-availability-api.onrender.com/health"
+
 
 # Create Database URL
 DATABASE_URL = os.environ.get("supabase_uri")
@@ -74,13 +77,40 @@ LIMIT 1;
 
 """
 
-def execute_query(faculty_name: str, day: str, time: str) -> str:
+# Function to periodically ping itself
+def keep_alive():
+    while True:
+        try:
+            response = requests.get(API_URL)
+            print(f"Pinged API: {response.status_code}")
+        except Exception as e:
+            print(f"Error pinging API: {e}")
+        time.sleep(660)  # 11 minutes (660 seconds)
+
+# Startup event that runs when the API starts
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    thread = threading.Thread(target=keep_alive, daemon=True)
+    thread.start()
+    print("Background keep-alive task started!")
+    yield  # Everything before this runs at startup, everything after runs at shutdown
+    print("Shutting down FastAPI service...")
+
+app = FastAPI(lifespan=lifespan)
+
+# Simple health check endpoint
+@app.get("/health",include_in_schema=True)
+def health_check():
+    return {"status": "keeping live"}
+
+
+async def execute_query(faculty_name: str, day: str, time: str) -> str:
     """Executes the SQL query on Supabase and returns results."""
     logging.info(f"Executing query for Faculty: {faculty_name}, Day: {day}, Time: {time}")
 
     try:
         with engine.connect() as connection:
-            result = connection.execute(text(formattable_sql_query), {
+            result = connection.execute(text(free_room_query), {
                 "faculty_name": faculty_name,
                 "day": day,
                 "time": time
@@ -103,7 +133,7 @@ def execute_query(faculty_name: str, day: str, time: str) -> str:
         return "Error retrieving schedule. Please try again later."
 
 @app.get("/faculty-schedule/")
-def get_faculty_schedule(
+async def get_faculty_schedule(
     faculty_name: str = Query(..., description="Enter faculty name"),
     day: str = Query(..., description="Enter the day (e.g., Monday)"),
     time: str = Query(..., description="Enter time in HH:MM format (e.g., 9:00)")
@@ -112,7 +142,7 @@ def get_faculty_schedule(
     return {"schedule": execute_query(faculty_name, day, time)}
 
 @app.get("/faculty_list")
-def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
+async def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
     #logging.info(f"Executing query for department: {dept}")
     with engine.connect() as connection:
         result=connection.execute(text("""SELECT "Faculty"
@@ -128,7 +158,7 @@ ORDER BY REGEXP_REPLACE("Faculty", '^(Dr\.|Prof\.|Mr\.|Ms\.)\s*[A-Z]\.\s*', '', 
 
 
 @app.get("/list-objects/")
-def list_objects(folder :str="Forms"):
+async def list_objects(folder :str="Forms"):
     try:
         s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                  aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -163,7 +193,7 @@ def list_objects(folder :str="Forms"):
         return {"error": str(e)}
 
 @app.get("/get-file/")
-def get_file(object_key:str):
+async def get_file(object_key:str):
     try:
         s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                  aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -187,7 +217,7 @@ def get_file(object_key:str):
 
 
 @app.get("/free-rooms/")
-def get_free_rooms(day: str = Query(..., title="Day of the week"),
+async def get_free_rooms(day: str = Query(..., title="Day of the week"),
                    time: str = Query(..., title="Time (HH:MM)")):
 
 

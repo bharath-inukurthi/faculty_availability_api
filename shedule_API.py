@@ -1,28 +1,15 @@
 import os
 import logging
+import asyncio
 from fastapi import FastAPI, Query
-import threading
-from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import boto3
-import time
-import  requests
-
-
+from sqlalchemy import text
+import aiohttp
+from datetime import datetime
 load_dotenv()
-# Initialize Logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-API_URL = "https://faculty-availability-api.onrender.com/health"
-
-
-# Create Database URL
-DATABASE_URL = os.environ.get("supabase_uri")
-
-# Create SQLAlchemy Engine
-engine = create_engine(DATABASE_URL)
-
-# SQL Query Template
 free_room_query=query = """
         WITH occupied_rooms AS (
             SELECT tt."Room ID"
@@ -41,7 +28,7 @@ free_room_query=query = """
         WHERE o."Room ID" IS NULL;
     """
 
-faculty_sql_query = """WITH faculty_schedule AS (
+faculty_sql_query = """ WITH faculty_schedule AS (
     SELECT tt.day_id, tt."Time_slot_id", fs."Faculty"  
     FROM time_table_db tt
     JOIN faculty_subject_db fs ON tt.fs_id = fs.fs_id
@@ -76,148 +63,138 @@ ORDER BY a.day_id, a.start_time
 LIMIT 1;
 
 """
+# Initialize Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+API_URL = "https://faculty-availability-api.onrender.com/health"
+DATABASE_URL = os.environ.get("supabase_uri")
+
+# Create Async SQLAlchemy Engine
+engine = create_async_engine(DATABASE_URL, echo=True)
+async_session_factory = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
+
 app = FastAPI()
-# Function to periodically ping itself
-def keep_alive():
+
+async def keep_alive():
+    """Asynchronously pings the API every 11 minutes."""
     while True:
         try:
-            response = requests.get(API_URL)
-            print(f"Pinged API: {response.status_code}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(API_URL) as response:
+                    logging.info(f"Pinged API: {response.status}")
         except Exception as e:
-            print(f"Error pinging API: {e}")
-        time.sleep(660)  # 11 minutes (660 seconds)
+            logging.error(f"Error pinging API: {e}")
+        await asyncio.sleep(660)
 
-# Startup event that runs when the API starts
 @app.on_event("startup")
-def lifespan():
-    task = threading.Thread(target=keep_alive, daemon=True)  # Run as a daemon thread
-    task.start()
+async def startup_event():
+    asyncio.create_task(keep_alive())
 
-
-
-# Simple health check endpoint
-@app.get("/health",include_in_schema=True)
-def health_check():
+@app.get("/health")
+async def health_check():
     return {"status": "keeping live"}
 
-
-def execute_query(faculty_name: str, day: str, time: str) -> str:
+async def execute_query(faculty_name:str, day:str, time:str):
     """Executes the SQL query asynchronously and returns results."""
-    logging.info(f"Executing query for Faculty: {faculty_name}, Day: {day}, Time: {time}")
-
-    try:
-         with engine.connect() as connection:
-            result = connection.execute(text(faculty_sql_query), {
-                "faculty_name": faculty_name,
-                "day": day,
-                "time": time
-            })
+    async with async_session_factory() as session:
+        try:
+            parsed_time = datetime.strptime(time, "%H:%M").time()
+            result = await session.execute(
+                text(faculty_sql_query), {"faculty_name": faculty_name, "day": day, "time": parsed_time}
+            )
             rows = result.fetchall()
 
             if not rows:
-                logging.warning("No schedule found for given input.")
-                return "No schedule available for this faculty at the given time."
-
+                return "No schedule available."
             output = [dict(row._mapping) for row in rows]
-            results = output[0]  # First result
-            logging.info(f"Query result: {results}")
-            response = f"You can meet {results['Faculty']} in room no. {results['cabin']} from {results['Slot']}."
-            logging.info(f"Response: {response}")
-            return response
-    except Exception as e:
-        logging.error(f"Database query error: {e}")
-        return "Error retrieving schedule. Please try again later."
+            print(output)
+            return {"faculty": output[0]["faculty"], "day":output[0]["cabin"], "time":output[0]["slot"]}
+        except Exception as e:
+            logging.error(f"Database error: {e}")
+            return "Error retrieving schedule."
 
 @app.get("/faculty-schedule/")
-def get_faculty_schedule(faculty_name: str, day: str, time: str):
-    """FastAPI endpoint to get faculty schedule asynchronously."""
-    return {"schedule":execute_query(faculty_name, day, time)}
+async def get_faculty_schedule(faculty_name: str=Query(..., description="Enter faculty name you want to meet"),
+                        day: str=Query(..., description="Enter the name of the weekday you want to meet(e.g.Mondya,Tuesday"),
+                        time: str=Query(..., description="enter time on which you want meet the faculty")):
+    return await execute_query(faculty_name, day, time)
 
 @app.get("/faculty_list")
-def faculty_list():#dept:str=Query(...,description="Enter department of faculty yu want to meet")):
-    #logging.info(f"Executing query for department: {dept}")
-    with engine.connect() as connection:
-        result=connection.execute(text("""SELECT "Faculty"
-FROM faculty_db
-ORDER BY REGEXP_REPLACE("Faculty", '^(Dr\.|Prof\.|Mr\.|Ms\.)\s*[A-Z]\.\s*', '', 'gi');
-"""))
-    rows=result.fetchall()
-    logging.info(f"Query result: {rows}\n\n")
-    output = [row[0] for row in rows[1:]]
-     # First result
-    logging.info(output)
-    return output
+async def faculty_list():
+    async with async_session_factory() as session:
+        result = await session.execute(
+            text('''SELECT "Faculty" FROM faculty_db ORDER BY REGEXP_REPLACE("Faculty", '^(Dr\\.|Prof\\.|Mr\\.|Ms\\.)\\s*[A-Z]\\.\\s*', '', 'gi');''')
+        )
+        rows = result.fetchall()
+    return [row[0] for row in rows]
 
+async def get_s3_client():
+    return boto3.client(
+        "s3",
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_REGION"),
+    )
 
 @app.get("/list-objects/")
-def list_objects(folder :str="Forms"):
-    try:
-        s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                                 region_name=os.getenv("AWS_REGION"))
-        logging.info("S3 client successfully created")
-    except Exception as e:
-        logging.error(f"Error creating S3 client: {e}")
-        s3_client = None
-    if s3_client is None:
-        return {"error": "S3 client could not be initialized"}
-
-    bucket_name = os.getenv("AWS_BUCKET_NAME")  # Get bucket name from .env
-    region = os.getenv("AWS_REGION", "us-east-1")  # Default region: us-east-1
-    logging.info(f"Attempting to list objects in: {bucket_name}/{folder}")
+async def list_objects(folder: str =Query(...,description="Enter the folder available in S3 bucket")):
+    s3_client = await get_s3_client()
+    bucket_name = os.getenv("AWS_BUCKET_NAME")
+    region=os.getenv("AWS_REGION")
 
     try:
-        response = s3_client.list_objects_v2(Bucket=bucket_name,Prefix=f"{folder}")
-        if "Contents" in response:
-            files = []
-            for obj in response["Contents"][1:]:
-                file_name = obj["Key"]
-                public_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{file_name}"
-                logging.info(public_url)
-                public_url = public_url.replace("+", "%20")  # Replace '+' with '%20' for spaces
-
-                files.append({"file_name": file_name.split("/")[1], "public_url": public_url})
-
+        if folder == "Forms":
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+            files = [
+                {
+                    "file_name": obj["Key"].split("/")[-1],  # Ensures correct filename extraction
+                    "public_url": f"https://{bucket_name}.s3.{region}.amazonaws.com/{obj['Key']}"
+                }
+                for obj in response.get("Contents", [])[1:]
+            ]
             return {"files": files}
-        return {"message": "No files found"}
+        else:
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+            files = [
+                {
+                    "file_name": obj["Key"].split("/")[-1] ,# Ensures correct filename extraction
+                    "public_url":"Use 'get-item' endpoint"
+                }
+                for obj in response.get("Contents", []) if obj["Key"] != ""
+            ]
+            return {"files": files}
     except Exception as e:
         logging.error(f"Error listing objects: {e}")
         return {"error": str(e)}
 
-@app.get("/get-file/")
-def get_file(object_key:str):
+@app.get("/empty-rooms/")
+async def find_empty_rooms(day: str=Query(...,description="Enter the name of weekday on which you want to find empty room"),
+                         time: str=Query(...,description="Enter the time of when you need an empty room")):
+    async with async_session_factory() as session:
+        result = await session.execute(text(free_room_query), {"day": day, "time": time})
+        free_rooms = [dict(row._mapping) for row in result.fetchall() if "&" not in row[1]]
+    return {"day": day, "time": time, "free_room": free_rooms[0]["Room No"]}
+
+
+@app.get("/get-item/")
+async def generate_temp_url(
+
+        object_key: str = Query(..., description="Key (file path) of the S3 object")
+
+):
+    bucket_name=os.getenv("AWS_BUCKET_NAME")
+    s3_client = await get_s3_client()
     try:
-        s3_client = boto3.client("s3", aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                                 region_name=os.getenv("AWS_REGION"))
-        logging.info("S3 client successfully created")
+        url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket_name, "Key": object_key},
+            ExpiresIn=300
+        )
+
+        file_name = object_key.split("/")[-1]  # Extract file name from path
+        return {"file_name": file_name, "presigned_url": url}
     except Exception as e:
-        logging.error(f"Error creating S3 client: {e}")
-        s3_client = None
-    if s3_client is None:
-        return {"error": "S3 client could not be initialized"}
-
-    bucket_name = os.getenv("AWS_BUCKET_NAME")  # Get bucket name from .env
-    logging.info(f"Attempting download: {object_key}")
-    presigned_url = s3_client.generate_presigned_url(
-        'get_object',
-        Params={'Bucket': bucket_name, 'Key': object_key},
-        ExpiresIn=60  # URL valid for 1 hour
-    )
-
-    return {"Pre-signed URL": presigned_url}
-
-
-@app.get("/free-rooms/")
-def get_free_rooms(day: str = Query(..., title="Day of the week"),
-                   time: str = Query(..., title="Time (HH:MM)")):
-
-
-    with engine.connect() as connection:
-        result = connection.execute(text(free_room_query), {"day": day, "time": time})
-        free_rooms = [
-            {"Room ID": row[0], "Room No": row[1]}
-            for row in result if "&" not in row[1]
-        ]
-
-    return {"day": day, "time": time, "free_rooms": free_rooms[1]["Room No"]}
+        logging.error(f"Error generating pre-signed URL: {e}")
+        return {"error": str(e)}

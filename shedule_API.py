@@ -7,8 +7,7 @@ from dotenv import load_dotenv
 import boto3
 import time
 import  requests
-import asyncio
-from contextlib import asynccontextmanager
+
 
 load_dotenv()
 # Initialize Logging
@@ -42,7 +41,7 @@ free_room_query=query = """
         WHERE o."Room ID" IS NULL;
     """
 
-faculty_sql_query = """WITH faculty_schedule AS (
+faculty_sql_query = """ WITH faculty_schedule AS (
     SELECT tt.day_id, tt."Time_slot_id", fs."Faculty"  
     FROM time_table_db tt
     JOIN faculty_subject_db fs ON tt.fs_id = fs.fs_id
@@ -75,7 +74,6 @@ AND (
 ) 
 ORDER BY a.day_id, a.start_time
 LIMIT 1;
-
 """
 app = FastAPI()
 # Function to periodically ping itself
@@ -108,7 +106,7 @@ async def execute_query(faculty_name: str, day: str, time: str) -> str:
 
     try:
         with engine.connect() as connection:
-            result = connection.execute(text(free_room_query), {
+            result = connection.execute(text(faculty_sql_query), {
                 "faculty_name": faculty_name,
                 "day": day,
                 "time": time

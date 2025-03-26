@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import boto3
 import time
 import  requests
+import asyncio
 from contextlib import asynccontextmanager
 
 load_dotenv()
@@ -76,7 +77,7 @@ ORDER BY a.day_id, a.start_time
 LIMIT 1;
 
 """
-
+app = FastAPI()
 # Function to periodically ping itself
 def keep_alive():
     while True:
@@ -88,15 +89,12 @@ def keep_alive():
         time.sleep(660)  # 11 minutes (660 seconds)
 
 # Startup event that runs when the API starts
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    thread = threading.Thread(target=keep_alive, daemon=True)
-    thread.start()
-    print("Background keep-alive task started!")
-    yield  # Everything before this runs at startup, everything after runs at shutdown
-    print("Shutting down FastAPI service...")
+@app.on_event("startup")
+def lifespan():
+    task = threading.Thread(target=keep_alive, daemon=True)  # Run as a daemon thread
+    task.start()
 
-app = FastAPI(lifespan=lifespan)
+
 
 # Simple health check endpoint
 @app.get("/health",include_in_schema=True)
@@ -121,7 +119,7 @@ async def execute_query(faculty_name: str, day: str, time: str) -> str:
                 logging.warning("No schedule found for given input.")
                 return "No schedule available for this faculty at the given time."
 
-            output = [dict(row._mapping) for row in rows] 
+            output = [dict(row._mapping) for row in rows]
             results = output[0]  # First result
             logging.info(f"Query result: {results}")
             keys=list(results.keys())

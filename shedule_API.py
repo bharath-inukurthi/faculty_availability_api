@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import pdf2image
 from fastapi import FastAPI, Query
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker

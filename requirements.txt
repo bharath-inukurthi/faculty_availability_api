@@ -8,3 +8,7 @@ boto3==1.37.1
 requests
 aioitertools==0.12.0
 aiohttp==3.11.13
+pdfplumber==0.11.5
+pdf2jpg==1.1
+pyPDF2==3.0.1
+

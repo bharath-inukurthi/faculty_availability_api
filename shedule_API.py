@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import pdf2image
 from fastapi import FastAPI, Query
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -9,6 +10,7 @@ import boto3
 from sqlalchemy import text
 import aiohttp
 from datetime import datetime
+from random import randint
 load_dotenv()
 free_room_query=query = """
         WITH occupied_rooms AS (
@@ -109,8 +111,8 @@ async def execute_query(faculty_name:str, day:str, time:str):
             if not rows:
                 return "No schedule available."
             output = [dict(row._mapping) for row in rows]
-            print(output)
-            return {"faculty": output[0]["faculty"], "day":output[0]["cabin"], "time":output[0]["slot"]}
+
+            return output[0]
         except Exception as e:
             logging.error(f"Database error: {e}")
             return "Error retrieving schedule."
@@ -175,7 +177,8 @@ async def find_empty_rooms(day: str=Query(...,description="Enter the name of wee
     async with async_session_factory() as session:
         result = await session.execute(text(free_room_query), {"day": day, "time": time})
         free_rooms = [dict(row._mapping) for row in result.fetchall() if "&" not in row[1]]
-    return {"day": day, "time": time, "free_room": free_rooms[0]["Room No"]}
+        room=randint(0,len(free_rooms)-1)
+    return {"day": day, "time": time, "free_room": free_rooms[room]["Room No"]}
 
 
 @app.get("/get-item/")

@@ -10,23 +10,35 @@ from sqlalchemy import text
 import aiohttp
 from datetime import datetime
 from random import randint
+import requests
 load_dotenv()
 free_room_query=query = """
         WITH occupied_rooms AS (
-            SELECT tt."Room ID"
-            FROM "time_table_db" tt
-            JOIN "days_db" d ON tt."day_id" = d."day_id"
-            JOIN "slots_db" s ON tt."Time_slot_id" = s."Time_slot_id"
-            WHERE d."Day" = :day  
-            AND (
-                :time >= SPLIT_PART(s."Time Slot", '-', 1)  
-                AND :time < SPLIT_PART(s."Time Slot", '-', 2)
-            )
+    SELECT 
+        tt."Room ID", 
+        s."Time Slot"
+    FROM "time_table_db" tt
+    JOIN "days_db" d ON tt."day_id" = d."day_id"
+    JOIN "slots_db" s ON tt."Time_slot_id" = s."Time_slot_id"
+    WHERE d."Day" = :day 
+        AND (
+            :time >= SPLIT_PART(s."Time Slot", '-', 1)  
+            AND :time < SPLIT_PART(s."Time Slot", '-', 2)
         )
-        SELECT r."Room ID", r."Room No"
-        FROM "room_db" r
-        LEFT JOIN occupied_rooms o ON r."Room ID" = o."Room ID"
-        WHERE o."Room ID" IS NULL;
+)
+SELECT 
+    r."Room No", 
+    s."Time Slot"
+FROM "room_db" r
+JOIN "slots_db" s 
+    ON (
+        :time >= SPLIT_PART(s."Time Slot", '-', 1)  
+        AND :time < SPLIT_PART(s."Time Slot", '-', 2)
+    )
+LEFT JOIN occupied_rooms o 
+    ON r."Room ID" = o."Room ID" 
+    AND s."Time Slot" = o."Time Slot"
+WHERE o."Room ID" IS NULL;
     """
 
 faculty_sql_query = """ WITH faculty_schedule AS (
@@ -148,14 +160,20 @@ async def list_objects(folder: str =Query(...,description="Enter the folder avai
     try:
         if folder == "Forms":
             response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
-            files = [
-                {
-                    "file_name": obj["Key"].split("/")[-1],  # Ensures correct filename extraction
-                    "public_url": f"https://{bucket_name}.s3.{region}.amazonaws.com/{obj['Key']}"
-                }
-                for obj in response.get("Contents", [])[1:]
-            ]
-            return {"files": files}
+            files = []
+            for obj in response.get("Contents", [])[1:]:  # Skipping the first object (if needed)
+                file_name = obj["Key"].split("/")[-1]  # Extract filename
+                s3_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{obj['Key']}"  # Full S3 URL
+
+                # Get shortened URL from TinyURL
+                short_url = requests.get(f"http://tinyurl.com/api-create.php?url={s3_url}").text
+
+                # Store the result
+                files.append({
+                    "file_name": file_name,
+                    "public_url": short_url
+                })
+
         else:
             response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
             files = [
@@ -165,7 +183,7 @@ async def list_objects(folder: str =Query(...,description="Enter the folder avai
                 }
                 for obj in response.get("Contents", []) if obj["Key"] != ""
             ]
-            return {"files": files}
+        return {"files": files}
     except Exception as e:
         logging.error(f"Error listing objects: {e}")
         return {"error": str(e)}
@@ -175,9 +193,9 @@ async def find_empty_rooms(day: str=Query(...,description="Enter the name of wee
                          time: str=Query(...,description="Enter the time of when you need an empty room")):
     async with async_session_factory() as session:
         result = await session.execute(text(free_room_query), {"day": day, "time": time})
-        free_rooms = [dict(row._mapping) for row in result.fetchall() if "&" not in row[1]]
+        free_rooms = [dict(row._mapping) for row in result.fetchall() if "&" not in row[0]]
         room=randint(0,len(free_rooms)-1)
-    return {"day": day, "time": time, "free_room": free_rooms[room]["Room No"]}
+    return {"day": day, "time": free_rooms[room]["Time Slot"], "free_room": free_rooms[room]["Room No"]}
 
 
 @app.get("/get-item/")
@@ -195,7 +213,9 @@ async def generate_temp_url(
             ExpiresIn=300
         )
 
-        file_name = object_key.split("/")[-1]  # Extract file name from path
+        file_name = object_key.split("/")[-1]
+        url=requests.get(f"http://tinyurl.com/api-create.php?url={url}")
+# Extract file name from path
         return {"file_name": file_name, "presigned_url": url}
     except Exception as e:
         logging.error(f"Error generating pre-signed URL: {e}")

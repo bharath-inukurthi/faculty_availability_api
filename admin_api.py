@@ -8,6 +8,9 @@ from PyPDF2 import PdfReader, PdfWriter
 from fastapi import FastAPI, File, UploadFile
 from dotenv import load_dotenv
 from pdf2jpg import pdf2jpg
+from utils import Data_extractor,TimeTableProcessor,inverse_course_mapping
+from sqlalchemy import create_engine, except_
+import pandas as pd
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +22,12 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI
 app = FastAPI()
 
+DATABASE_URL = os.environ.get("supabase_uri_non_async")
+
+# Create Async SQLAlchemy Engine
+
+
+
 # AWS S3 Configuration
 s3_client = boto3.client(
     "s3",
@@ -26,6 +35,8 @@ s3_client = boto3.client(
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     region_name=os.getenv("AWS_REGION"),
 )
+course_mapping={v:k for k,v in inverse_course_mapping.items()}
+
 image_output="images"
 UPLOAD_FOLDER = "uploads"
 EXTRACTED_FOLDER = "extracted_pages"
@@ -34,7 +45,58 @@ os.makedirs(EXTRACTED_FOLDER, exist_ok=True)
 os.makedirs(image_output, exist_ok=True)
 
 
-@app.post("/upload-assets/")
+@app.post("/upload-shchedule-to-DB/")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Endpoint to upload and process a timetable PDF."""
+    try:
+        pdf_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        with open(pdf_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Process PDF
+
+        processor = TimeTableProcessor(
+            Data_extractor(pdf_path, course_mapping).extracted, course_mapping
+        )
+        dbs = processor.process_all()
+
+        # Update database
+        engine = create_engine(DATABASE_URL)
+        # Use `engine.connect()` in a `with` statement
+        with engine.connect() as connection:
+            for name, df in dbs.items():
+                df.to_sql(name, con=connection, if_exists='replace', index=False)
+        os.remove(pdf_path)
+        return {"message": "Timetable processed successfully!"}
+    except Exception as e:
+        return {"message": e}
+
+@app.post("/upload-cabins-to-DB")
+def upload_cabin_data(file: UploadFile = File(...)):
+    try:
+        pdf_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        with open(pdf_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        with pdfplumber.open(pdf_path) as pdf_file:
+            tables=[]
+            for page in pdf_file.pages:
+                lst=[]
+                table=page.extract_tables()
+                for row in table[0][1:]:
+                    lst.append({"Faculty":row[1],
+                          "cabin":row[-1]})
+                tables.append(pd.DataFrame(lst))
+        df=pd.concat(tables,ignore_index=True)
+        engine = create_engine(DATABASE_URL)
+        with engine.connect() as connection:
+            df.to_sql("cabin_db", con=connection, if_exists='replace', index=False)
+        os.remove(pdf_path)
+        return {"message":"upload successfull"}
+    except Exception as e:
+        return {"error": e}
+
+
+@app.post("/upload-files-to-s3/")
 async def upload_pdf(folder: str = "", file: UploadFile = File(...)):
     """Uploads a PDF file, extracts pages, renames them, and uploads to S3."""
     pdf_path = os.path.join(UPLOAD_FOLDER, file.filename)

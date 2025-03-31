@@ -173,6 +173,7 @@ async def list_objects(folder: str =Query(...,description="Enter the folder avai
                     "file_name": file_name,
                     "public_url": short_url
                 })
+                print(short_url)
 
         else:
             response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
@@ -214,9 +215,10 @@ async def generate_temp_url(
         )
 
         file_name = object_key.split("/")[-1]
-        url=requests.get(f"http://tinyurl.com/api-create.php?url={url}")
+        short_url=requests.get(f"http://tinyurl.com/api-create.php?url={url}").text
 # Extract file name from path
-        return {"file_name": file_name, "presigned_url": url}
+        print(short_url)
+        return {"file_name": file_name, "presigned_url": short_url}
     except Exception as e:
         logging.error(f"Error generating pre-signed URL: {e}")
         return {"error": str(e)}

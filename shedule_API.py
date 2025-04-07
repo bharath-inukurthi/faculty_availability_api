@@ -6,12 +6,27 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import boto3
+import aioboto3
 from sqlalchemy import text
 import aiohttp
 from datetime import datetime
 from random import randint
 import requests
+import imaplib
+import email
+from email.header import decode_header
+from email.utils import parsedate_to_datetime
+import  io
+import re
+import json
+from typing import AsyncGenerator
+from fastapi.responses import StreamingResponse
+
 load_dotenv()
+EMAIL_USER = "99230040570@klu.ac.in"   # Change this to your email
+EMAIL_PASS = "qntt yvws darp wtwz"        # Use an app password if needed
+IMAP_SERVER = "imap.gmail.com"          # Change for other providers
+SENDER_EMAIL = "hodcse@klu.ac.in"
 free_room_query=query = """
         WITH occupied_rooms AS (
     SELECT 
@@ -118,11 +133,11 @@ async def execute_query(faculty_name:str, day:str, time:str):
                 text(faculty_sql_query), {"faculty_name": faculty_name, "day": day, "time": parsed_time}
             )
             rows = result.fetchall()
-
+            logging.info(f"rows fetched : {rows}")
             if not rows:
                 return "No schedule available."
             output = [dict(row._mapping) for row in rows]
-
+            logging.info(f"results : {output[0]}")
             return output[0]
         except Exception as e:
             logging.error(f"Database error: {e}")
@@ -222,3 +237,122 @@ async def generate_temp_url(
     except Exception as e:
         logging.error(f"Error generating pre-signed URL: {e}")
         return {"error": str(e)}
+def clean_filename(filename):
+    if filename:
+        decoded_filename, encoding = decode_header(filename)[0]
+        if isinstance(decoded_filename, bytes):
+            decoded_filename = decoded_filename.decode(encoding or "utf-8", errors="ignore")
+        decoded_filename = re.sub(r'^[^a-zA-Z]+', '', decoded_filename)
+        return decoded_filename
+    return None
+
+# --- Upload to S3 from memory (streaming) ---
+async def upload_to_s3_streaming(payload_bytes: bytes, s3_key: str, metadata: dict):
+    bucket_name = os.getenv("AWS_BUCKET_NAME")
+    session = aioboto3.Session()
+    async with session.client(
+            "s3",
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=os.getenv("AWS_REGION")
+    ) as s3_client:
+        stream = io.BytesIO(payload_bytes)
+        await s3_client.upload_fileobj(
+            Fileobj=stream,
+            Bucket=bucket_name,
+            Key=s3_key,
+            ExtraArgs={"Metadata": {k.lower(): v for k, v in metadata.items()}}
+        )
+        logging.info(f"✅ Uploaded: {s3_key}")
+
+# --- Email Processing Logic ---
+async def process_recent_emails():
+    mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail.select("inbox")
+    status, email_ids = mail.search(None, f'(UNSEEN FROM "{SENDER_EMAIL}")')
+
+    email_ids = email_ids[0].split() # Last 100 emails
+
+    tasks = []
+
+    for num in reversed(email_ids):
+        email_id = num.decode() if isinstance(num, bytes) else str(num)
+        sstatus, data = mail.fetch(email_id, "(RFC822)")
+        for response_part in data:
+            if isinstance(response_part, tuple):
+                msg = email.message_from_bytes(response_part[1])
+
+                subject, encoding = decode_header(msg["Subject"])[0]
+                if isinstance(subject, bytes):
+                    subject = subject.decode(encoding or "utf-8", errors="ignore")
+                logging.info(f"📩 Processing Email: {subject}")
+
+                for part in msg.walk():
+                    if part.get_content_maintype() != "multipart" and part.get("Content-Disposition"):
+                        filename = clean_filename(part.get_filename())
+                        if not filename:
+                            continue
+
+                        raw_date = msg["Date"]
+                        parsed_date = parsedate_to_datetime(raw_date)
+                        date_str = parsed_date.strftime("%B-%Y-%d")
+                        month_str = parsed_date.strftime("%B")
+
+                        payload = part.get_payload(decode=True)
+                        metadata = {"month": month_str, "date": date_str}
+                        s3_key = f"Circulars/{filename}"
+                        logging.info(s3_key)
+                        tasks.append(upload_to_s3_streaming(payload, s3_key, metadata))
+        mail.store(num, '+FLAGS', '\\Seen')
+    await asyncio.gather(*tasks)
+    return {"status": "✅ All emails processed and uploaded"}
+
+# --- FastAPI Endpoint ---
+@app.get("/upload-emails")
+async def trigger_email_upload():
+    try:
+        result = await process_recent_emails()
+        return {"content": result}
+    except Exception as e:
+        logging.exception("❌ Error processing emails")
+        return {"error": str(e)}
+async def generate_s3_file_info() -> AsyncGenerator[bytes, None]:
+    session = aioboto3.Session()
+    bucket_name = os.getenv("AWS_BUCKET_NAME")
+
+    async with session.client(
+        "s3",
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_REGION")
+    ) as s3_client:
+        response = await s3_client.list_objects_v2(Bucket=bucket_name, Prefix="Circulars")
+
+        if 'Contents' not in response:
+            yield json.dumps({"message": "No files found in Circulars/"}) + "\n"
+            return
+
+        for obj in response['Contents']:
+            key = obj['Key']
+            if key.endswith('/'):
+                continue
+
+            head = await s3_client.head_object(Bucket=bucket_name, Key=key)
+            metadata = head.get('Metadata', {})
+
+            filename = key.split('/')[-1]
+            public_url = f"https://{bucket_name}.s3.amazonaws.com/{key}"
+
+            file_info = {
+                "filename": filename,
+                "url": public_url,
+                "date": metadata.get("date"),
+                "month": metadata.get("month")
+            }
+
+            yield (json.dumps(file_info) + "\n").encode("utf-8")  # Each line is a JSON object
+
+@app.get("/stream-circulars")
+async def stream_circulars():
+    return StreamingResponse(generate_s3_file_info(), media_type="application/json")

@@ -317,6 +317,7 @@ async def trigger_email_upload():
     except Exception as e:
         logging.exception("❌ Error processing emails")
         return {"error": str(e)}
+
 async def generate_s3_file_info() -> AsyncGenerator[bytes, None]:
     session = aioboto3.Session()
     bucket_name = os.getenv("AWS_BUCKET_NAME")
@@ -351,8 +352,8 @@ async def generate_s3_file_info() -> AsyncGenerator[bytes, None]:
                 "month": metadata.get("month")
             }
 
-            yield (json.dumps(file_info) + "\n").encode("utf-8")  # Each line is a JSON object
-
+            yield (json.dumps(file_info) + "\n\n").encode("utf-8")  # Each line is a JSON object
+            await asyncio.sleep(0.1)
 @app.get("/stream-circulars")
 async def stream_circulars():
-    return StreamingResponse(generate_s3_file_info(), media_type="application/json")
+    return StreamingResponse(generate_s3_file_info(), media_type="text/event-stream")

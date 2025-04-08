@@ -19,7 +19,6 @@ from email.utils import parsedate_to_datetime
 import  io
 import re
 import json
-from typing import AsyncGenerator
 from fastapi.responses import StreamingResponse
 
 load_dotenv()
@@ -309,7 +308,7 @@ async def process_recent_emails():
     return {"status": "✅ All emails processed and uploaded"}
 
 # --- FastAPI Endpoint ---
-@app.get("/upload-emails")
+@app.post("/upload-emails")
 async def trigger_email_upload():
     try:
         result = await process_recent_emails()
@@ -318,7 +317,7 @@ async def trigger_email_upload():
         logging.exception("❌ Error processing emails")
         return {"error": str(e)}
 
-async def generate_s3_file_info() -> AsyncGenerator[bytes, None]:
+async def generate_s3_file_info():
     session = aioboto3.Session()
     bucket_name = os.getenv("AWS_BUCKET_NAME")
 
@@ -352,8 +351,12 @@ async def generate_s3_file_info() -> AsyncGenerator[bytes, None]:
                 "month": metadata.get("month")
             }
 
-            yield (json.dumps(file_info) + "\n\n").encode("utf-8")  # Each line is a JSON object
+            yield json.dumps(file_info) + "\n"
             await asyncio.sleep(0.1)
+
 @app.get("/stream-circulars")
 async def stream_circulars():
-    return StreamingResponse(generate_s3_file_info(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate_s3_file_info(),
+        media_type="application/x-ndjson"  # Using newline-delimited JSON format
+    )

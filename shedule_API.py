@@ -1,7 +1,7 @@
 import os
 import logging
 import asyncio
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query,Request,HTTPException
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -18,6 +18,9 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 import  io
 import re
+from typing import Dict, Any
+import google.auth
+from googleapiclient.discovery import build
 import json
 from fastapi.responses import StreamingResponse
 
@@ -93,7 +96,8 @@ LIMIT 1;
 # Initialize Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-API_URL = "https://faculty-availability-api.onrender.com/health"
+API_URL_1= "https://faculty-availability-api.onrender.com/health"
+API_URL_2 = "https://faculty-availability-api.onrender.com/watch_inbox"
 DATABASE_URL = os.environ.get("supabase_uri")
 
 # Create Async SQLAlchemy Engine
@@ -104,21 +108,24 @@ async_session_factory = sessionmaker(
 
 app = FastAPI()
 
-async def keep_alive():
+async def keep_alive(api_url: str, interval_seconds: int):
     """Asynchronously pings the API every 11 minutes."""
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(API_URL) as response:
+                async with session.get(api_url) as response:
                     logging.info(f"Pinged API: {response.status}")
         except Exception as e:
             logging.error(f"Error pinging API: {e}")
-        await asyncio.sleep(660)
+        await asyncio.sleep(interval_seconds)
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(keep_alive())
+    # Start the first keep_alive task (every 11 minutes)
+    asyncio.create_task(keep_alive(API_URL_1, 660))  # 660 seconds = 11 minutes
 
+    # Start the second keep_alive task (every 5 days)
+    asyncio.create_task(keep_alive(API_URL_2, 432000))  # 432000 seconds = 5 days
 @app.get("/health")
 async def health_check():
     return {"status": "keeping live"}
@@ -317,15 +324,17 @@ async def trigger_email_upload():
         logging.exception("❌ Error processing emails")
         return {"error": str(e)}
 
+
 async def generate_s3_file_info():
+    """Generate streaming data of S3 file information"""
     session = aioboto3.Session()
     bucket_name = os.getenv("AWS_BUCKET_NAME")
 
     async with session.client(
-        "s3",
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-        region_name=os.getenv("AWS_REGION")
+            "s3",
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=os.getenv("AWS_REGION")
     ) as s3_client:
         response = await s3_client.list_objects_v2(Bucket=bucket_name, Prefix="Circulars")
 
@@ -347,16 +356,71 @@ async def generate_s3_file_info():
             file_info = {
                 "filename": filename,
                 "url": public_url,
-                "date": metadata.get("date"),
-                "month": metadata.get("month")
+                "date": metadata.get("date", ""),
+                "month": metadata.get("month", "")
             }
 
             yield json.dumps(file_info) + "\n"
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)  # Small delay to avoid overwhelming clients
 
+
+@app.get("/watch_inbox")
+async def watch_inbox() -> Dict[str, Any]:
+    """
+    Sets up Gmail API notification watch that will send a signal to Pub/Sub
+    when new emails arrive. Does not include email content in the notification.
+    """
+    try:
+
+        # Now, you can load credentials from the token data
+        creds, _ = google.auth.load_credentials_from_file(r'etc/secrets/token.json')
+
+        service = build('gmail', 'v1', credentials=creds)
+
+        # Set up Gmail Watch to get notifications about new emails
+        watch_request = {
+            'topicName': os.getenv("PUBSUB_TOPIC_NAME"),
+            'labelIds': ['INBOX'],
+            'labelFilterAction': 'include'
+        }
+        # Execute the watch request
+        response = service.users().watch(userId='me', body=watch_request).execute()
+
+        # Return the historyId and expiration from the watch response
+        return {
+            'status': 'success',
+            'message': 'Email notification watch configured successfully',
+            'historyId': response.get('historyId'),
+            'expiration': response.get('expiration')
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                'status': 'error',
+                'message': f'An error occurred: {str(error)}'
+            }
+        )
 @app.get("/stream-circulars")
-async def stream_circulars():
+async def stream_circulars(request: Request):
+    # Get the user agent to detect client type
+    user_agent = request.headers.get("user-agent", "").lower()
+
+    # Common headers for streaming response
+    headers = {
+        "Content-Type": "application/x-ndjson",
+        "Transfer-Encoding": "chunked",
+        "Access-Control-Allow-Origin": "*",  # For CORS if needed
+        "Cache-Control": "no-cache"  # Prevent caching
+    }
+
+    # If it's a browser, add content disposition for download
+    if "mozilla" in user_agent or "chrome" in user_agent or "safari" in user_agent or "edge" in user_agent:
+        headers["Content-Disposition"] = "attachment; filename=circulars.json"
+
+    # For Postman or React Native, we'll just stream the data without suggesting a download
     return StreamingResponse(
         generate_s3_file_info(),
-        media_type="application/x-ndjson"  # Using newline-delimited JSON format
+        headers=headers
     )

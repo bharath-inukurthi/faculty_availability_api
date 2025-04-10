@@ -3,3 +3,5 @@ __pycache__
 .idea
 name.py
 mail.py
+credentials.json
+etc/secrets/token.json

@@ -25,10 +25,7 @@ import json
 from fastapi.responses import StreamingResponse
 
 load_dotenv()
-EMAIL_USER = "99230040570@klu.ac.in"   # Change this to your email
-EMAIL_PASS = "qntt yvws darp wtwz"        # Use an app password if needed
-IMAP_SERVER = "imap.gmail.com"          # Change for other providers
-SENDER_EMAIL = "hodcse@klu.ac.in"
+
 free_room_query=query = """
         WITH occupied_rooms AS (
     SELECT 
@@ -109,7 +106,7 @@ async_session_factory = sessionmaker(
 app = FastAPI()
 
 async def keep_alive(api_url: str, interval_seconds: int):
-    """Asynchronously pings the API every 11 minutes."""
+    #Asynchronously pings the API every 11 minutes.
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -273,10 +270,11 @@ async def upload_to_s3_streaming(payload_bytes: bytes, s3_key: str, metadata: di
 
 # --- Email Processing Logic ---
 async def process_recent_emails():
-    mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail = imaplib.IMAP4_SSL(os.getenv('IMAP_SERVER'))
+    mail.login(os.getenv('EMAIL_USER'), os.getenv('EMAIL_PASS'))
     mail.select("inbox")
-    status, email_ids = mail.search(None, f'(UNSEEN FROM "{SENDER_EMAIL}")')
+    target=os.getenv('SENDER_EMAIL')
+    status, email_ids = mail.search(None, f'(UNSEEN FROM "{target}")')
 
     email_ids = email_ids[0].split() # Last 100 emails
 
@@ -360,7 +358,7 @@ async def generate_s3_file_info():
                 "month": metadata.get("month", "")
             }
 
-            yield json.dumps(file_info) + "\n"
+            yield f"data:{json.dumps(file_info)}\n\n"  # Each line is a JSON object
             await asyncio.sleep(0.1)  # Small delay to avoid overwhelming clients
 
 
@@ -405,22 +403,7 @@ async def watch_inbox() -> Dict[str, Any]:
 @app.get("/stream-circulars")
 async def stream_circulars(request: Request):
     # Get the user agent to detect client type
-    user_agent = request.headers.get("user-agent", "").lower()
-
-    # Common headers for streaming response
-    headers = {
-        "Content-Type": "application/x-ndjson",
-        "Transfer-Encoding": "chunked",
-        "Access-Control-Allow-Origin": "*",  # For CORS if needed
-        "Cache-Control": "no-cache"  # Prevent caching
-    }
-
-    # If it's a browser, add content disposition for download
-    if "mozilla" in user_agent or "chrome" in user_agent or "safari" in user_agent or "edge" in user_agent:
-        headers["Content-Disposition"] = "attachment; filename=circulars.json"
-
-    # For Postman or React Native, we'll just stream the data without suggesting a download
-    return StreamingResponse(
+   return StreamingResponse(
         generate_s3_file_info(),
-        headers=headers
+        media_type="text/event-stream"  # Using newline-delimited JSON format
     )
